@@ -381,93 +381,147 @@ app.post('/members', async (req, res) => {
 
 // ===== Add Member =====
 // ===== Add Member with input validation =====
-app.post('/add-member', async(req,res)=>{
-  try{
-    let {username, user_id, access_hash, targetGroup} = req.body
+app.post('/add-member', async (req, res) => {
+  try {
+    let { username, user_id, access_hash, targetGroup } = req.body;
 
-    // ===== Multi-line support =====
-    const usernames = username ? username.split("\n").map(u=>u.trim()).filter(Boolean) : []
+    const usernames = username
+      ? username.split("\n").map(u => u.trim()).filter(Boolean)
+      : [];
 
-    if(usernames.length === 0 && !user_id){
-      return res.json({status:"failed", reason:"Missing username or user_id", accountUsed:"none"})
+    if (usernames.length === 0 && !user_id) {
+      return res.json({
+        status: "failed",
+        reason: "Missing username or user_id",
+        accountUsed: "none"
+      });
     }
 
-    const results = []
+    function normalizeUsername(u) {
+      u = u.trim();
+      if (u.includes("t.me/")) u = u.split("/").pop();
+      if (u.startsWith("@")) u = u.slice(1);
+      return u;
+    }
 
-    for(const u of usernames){
-      // ===== Validate =====
-      if(!/^(@?[a-zA-Z0-9_]+|https:\/\/t\.me\/[a-zA-Z0-9_]+)$/.test(u)){
-        results.push({input:u, status:"failed", reason:"Invalid username or link", accountUsed:"none"})
-        continue
+    const results = [];
+
+    for (const u of usernames) {
+
+      // 🔥 NORMALIZE ONLY (NO STRICT VALIDATION)
+      const cleanUsername = normalizeUsername(u);
+
+      if (!cleanUsername) {
+        results.push({ input: u, status: "failed", reason: "Empty username", accountUsed: "none" });
+        continue;
       }
 
-      // ===== Normalize =====
-      const cleanUsername = normalizeUsername(u)
-
-      // ===== Get Account =====
-      const acc = getAvailableAccount()
-      if(!acc){
-        results.push({input:u, status:"failed", reason:"All accounts FloodWait", accountUsed:"none"})
-        continue
+      const acc = getAvailableAccount();
+      if (!acc) {
+        results.push({ input: u, status: "failed", reason: "All accounts FloodWait", accountUsed: "none" });
+        continue;
       }
 
-      const client = await getClient(acc)
-      await autoJoin(client, targetGroup)
+      const client = await getClient(acc);
+      await autoJoin(client, targetGroup);
 
-      let status="failed", reason="unknown", saveHistory=false
+      let status = "failed",
+          reason = "unknown",
+          saveHistory = false;
 
-      try{
-        const userEntity = await client.getEntity(cleanUsername)
-        const groupEntity = await client.getEntity(targetGroup)
+      try {
+        const userEntity = await client.getEntity(cleanUsername);
+        const groupEntity = await client.getEntity(targetGroup);
 
+        // ===== INVITE =====
         await client.invoke(new Api.channels.InviteToChannel({
-          channel:groupEntity,
-          users:[userEntity]
-        }))
+          channel: groupEntity,
+          users: [userEntity]
+        }));
 
-        status="success"
-        reason="joined"
-        saveHistory=true
+        // ===== 🔥 VERIFY REAL JOIN =====
+        let isMember = false;
 
-        acc.addCount = (acc.addCount||0)+1
-        await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
+        try {
+          const participants = await client.getParticipants(groupEntity, {
+            filter: new Api.ChannelParticipantsSearch({ q: cleanUsername }),
+            limit: 1
+          });
 
-      }catch(err){
-        const wait=parseFlood(err)
-        if(wait){
-          const until=Date.now()+wait*1000
-          acc.floodWaitUntil=until
-          acc.status="floodwait"
-          await update(ref(db,`accounts/${acc.id}`),{status:"floodwait", floodWaitUntil:until})
-          reason=`FloodWait ${wait}s`
-          saveHistory=true
-        }else{
-          reason=err.message
+          isMember = participants.some(p => p.id == userEntity.id);
+        } catch (e) {}
+
+        if (isMember) {
+          status = "success";
+          reason = "joined";
+        } else {
+          status = "failed";
+          reason = "Not actually joined";
+        }
+
+        saveHistory = true;
+
+        if (status === "success") {
+          acc.addCount = (acc.addCount || 0) + 1;
+          await update(ref(db, `accounts/${acc.id}`), {
+            addCount: acc.addCount
+          });
+        }
+
+      } catch (err) {
+        const wait = parseFlood(err);
+
+        if (wait) {
+          const until = Date.now() + wait * 1000;
+
+          acc.floodWaitUntil = until;
+          acc.status = "floodwait";
+
+          await update(ref(db, `accounts/${acc.id}`), {
+            status: "floodwait",
+            floodWaitUntil: until
+          });
+
+          status = "failed";
+          reason = `FloodWait ${wait}s`;
+          saveHistory = true;
+
+        } else {
+          status = "failed";
+          reason = err.message;
         }
       }
 
-      // ===== Save History =====
-      if(saveHistory){
-        await push(ref(db,'history'),{
-          username:cleanUsername,
+      if (saveHistory) {
+        await push(ref(db, 'history'), {
+          username: cleanUsername,
           status,
           reason,
-          accountUsed:acc.phone||acc.id,
-          timestamp:Date.now()
-        })
+          accountUsed: acc.phone || acc.id,
+          timestamp: Date.now()
+        });
       }
 
-      results.push({input:u, status, reason, accountUsed:acc.phone||acc.id})
-      await sleep(2000)
+      results.push({
+        input: u,
+        status,
+        reason,
+        accountUsed: acc.phone || acc.id
+      });
+
+      await sleep(2000);
     }
 
-    res.json(results)
+    res.json(results);
 
-  }catch(err){
-    res.json({status:"failed", reason:err.message, accountUsed:"unknown"})
+  } catch (err) {
+    res.json({
+      status: "failed",
+      reason: err.message,
+      accountUsed: "unknown"
+    });
   }
-})
-
+});
 // ===== Status APIs =====
 app.get('/account-status', async(req,res)=>{
   const snap=await get(ref(db,'accounts'))
