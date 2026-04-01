@@ -322,9 +322,13 @@ async function autoJoin(client, group){
     await client.getEntity(clean)
   }catch{
     try{
-      await client.invoke(
-        new Api.messages.ImportChatInvite({hash:clean})
-      )
+      // 🔥 support invite link
+      if(group.includes("+") || group.includes("joinchat")){
+        const hash = group.split("/").pop().replace("+","")
+        await client.invoke(new Api.messages.ImportChatInvite({ hash }))
+      }else{
+        await client.invoke(new Api.channels.JoinChannel({ channel: clean }))
+      }
     }catch(e){}
   }
 }
@@ -432,7 +436,28 @@ app.post('/add-member', async (req, res) => {
       try {
         const userEntity = await client.getEntity(cleanUsername);
         const groupEntity = await client.getEntity(targetGroup);
+ // ===== 🔥 CHECK ALREADY MEMBER =====
+  let alreadyMember = false;
 
+  try {
+    await client.getParticipant(groupEntity, userEntity);
+    alreadyMember = true;
+  } catch {}
+
+  if (alreadyMember) {
+    status = "success";
+    reason = "already in group";
+    saveHistory = true;
+
+    results.push({
+      input: u,
+      status,
+      reason,
+      accountUsed: acc.phone || acc.id
+    });
+
+    continue; // ⛔ skip invite
+  }
     
        // ===== INVITE =====
 await client.invoke(new Api.channels.InviteToChannel({
@@ -448,7 +473,7 @@ let isMember = false;
 
 for (let i = 0; i < 3; i++) {
   try {
-    const participant = await client.getParticipant(groupEntity, userEntity.id);
+    const participant = await client.getParticipant(groupEntity, userEntity);
 
     if (participant) {
       isMember = true;
